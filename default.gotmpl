@@ -36,7 +36,7 @@
   {{- $sorted = append $sorted (index $byKey $k) -}}
 {{- end -}}
 
-{{- $supportSet := dict "shadowsocks" true "vmess" true "vless" true "trojan" true "hysteria2" true "hysteria" true "tuic" true "anytls" true -}}
+{{- $supportSet := dict "shadowsocks" true "shadowsocksr" true "vmess" true "vless" true "trojan" true "hysteria2" true "hysteria" true "tuic" true "anytls" true -}}
 {{- $supportedProxies := list -}}
 {{- range $proxy := $sorted -}}
   {{- if hasKey $supportSet $proxy.Type -}}
@@ -135,15 +135,28 @@ STATUS=Traffic: {{ $used }} GiB/{{ $total }} GiB | Expires: {{ $ExpiredAt }}
 
   {{- if eq $proxy.Type "shadowsocks" }}
   {{- $params := list -}}
-  {{- /* Shadowsocks 特有的 obfs 插件参数 */ -}}
-  {{- if ne (default "" $proxy.Obfs) "" -}}
+  {{- /* Shadowsocks SIP003 plugin parameters. */ -}}
+  {{- if ne (default "" $proxy.Plugin) "" -}}
+    {{- $pluginParts := list $proxy.Plugin -}}
+    {{- range $key := sortAlpha (keys (default (dict) $proxy.PluginOptions)) -}}
+      {{- $value := index $proxy.PluginOptions $key -}}
+      {{- if kindIs "bool" $value -}}
+        {{- if $value -}}
+          {{- $pluginParts = append $pluginParts $key -}}
+        {{- end -}}
+      {{- else -}}
+        {{- $pluginParts = append $pluginParts (printf "%s=%v" $key $value) -}}
+      {{- end -}}
+    {{- end -}}
+    {{- $params = append $params (printf "plugin=%s" (join ";" $pluginParts | urlquery)) -}}
+  {{- else if ne (default "" $proxy.Obfs) "" -}}
     {{- $params = append $params (printf "obfs=%s" $proxy.Obfs) -}}
-  {{- end -}}
-  {{- if ne (default "" $proxy.ObfsHost) "" -}}
-    {{- $params = append $params (printf "obfs-host=%s" $proxy.ObfsHost) -}}
-  {{- end -}}
-  {{- if ne (default "" $proxy.ObfsPath) "" -}}
-    {{- $params = append $params (printf "obfs-uri=%s" ($proxy.ObfsPath | urlquery)) -}}
+    {{- if ne (default "" $proxy.ObfsHost) "" -}}
+      {{- $params = append $params (printf "obfs-host=%s" $proxy.ObfsHost) -}}
+    {{- end -}}
+    {{- if ne (default "" $proxy.ObfsPath) "" -}}
+      {{- $params = append $params (printf "obfs-uri=%s" ($proxy.ObfsPath | urlquery)) -}}
+    {{- end -}}
   {{- end -}}
   {{- /* 使用公共传输层配置 */ -}}
   {{- range $key, $val := $buildTransportParams -}}
@@ -156,6 +169,19 @@ STATUS=Traffic: {{ $used }} GiB/{{ $total }} GiB | Expires: {{ $ExpiredAt }}
   {{- /* 添加公共参数 */ -}}
   {{- $params = append $params $common }}
 ss://{{ printf "%s:%s" (default "aes-128-gcm" $proxy.Method) $password | b64enc }}@{{ $server }}:{{ $proxy.Port }}?{{ join "&" $params }}#{{ $proxy.Name }}
+  {{- else if eq $proxy.Type "shadowsocksr" }}
+    {{- $ssrPassword := b64enc (default "" $proxy.ServerKey) | replace "+" "-" | replace "/" "_" | trimSuffix "=" | trimSuffix "=" -}}
+    {{- $clientParam := printf "%d:%s" $.UserInfo.ID $password -}}
+    {{- $protoParam := b64enc $clientParam | replace "+" "-" | replace "/" "_" | trimSuffix "=" | trimSuffix "=" -}}
+    {{- $remarks := b64enc $proxy.Name | replace "+" "-" | replace "/" "_" | trimSuffix "=" | trimSuffix "=" -}}
+    {{- $ssrParams := list (printf "protoparam=%s" $protoParam) (printf "remarks=%s" $remarks) -}}
+    {{- if ne (default "" $proxy.ObfsParam) "" -}}
+      {{- $encodedObfsParam := b64enc $proxy.ObfsParam | replace "+" "-" | replace "/" "_" | trimSuffix "=" | trimSuffix "=" -}}
+      {{- $ssrParams = append $ssrParams (printf "obfsparam=%s" $encodedObfsParam) -}}
+    {{- end -}}
+    {{- $ssrPlain := printf "%s:%d:%s:%s:%s:%s/?%s" $server $proxy.Port (default "auth_aes128_sha1" $proxy.SSRProtocol) (default "aes-128-cfb" $proxy.Method) (default "plain" $proxy.Obfs) $ssrPassword (join "&" $ssrParams) -}}
+    {{- $ssrLink := b64enc $ssrPlain | replace "+" "-" | replace "/" "_" | trimSuffix "=" | trimSuffix "=" -}}
+ssr://{{ $ssrLink }}
   {{- else if eq $proxy.Type "vmess" }}
   {{- $vmessDict := dict "v" "2" "ps" $proxy.Name "add" $proxy.Server "port" (printf "%d" $proxy.Port) "id" $password "aid" "0" "net" "tcp" "type" "none" -}}
   {{- if hasKey $buildTransportParams "type" -}}
@@ -328,7 +354,7 @@ hysteria2://{{- if ne $password "" -}}{{ $password }}@{{- end -}}{{ $server }}:{
     {{- $params = append $params "allow_insecure=1" -}}
   {{- end -}}
   {{- $params = append $params $common }}
-tuic://{{ default "" $proxy.ServerKey }}:{{ $password }}@{{ $server }}:{{ $proxy.Port }}?{{ join "&" $params }}#{{ $proxy.Name }}
+tuic://{{ $password }}:{{ $password }}@{{ $server }}:{{ $proxy.Port }}?{{ join "&" $params }}#{{ $proxy.Name }}
   {{- else if eq $proxy.Type "anytls" }}
   {{- $params := list -}}
   {{- /* 使用公共传输层配置 */ -}}

@@ -36,7 +36,7 @@
   {{- $sorted = append $sorted (index $byKey $k) -}}
 {{- end -}}
 
-{{- $supportSet := dict "shadowsocks" true "vmess" true "vless" true "trojan" true "hysteria2" true "hysteria" true "tuic" true "anytls" true -}}
+{{- $supportSet := dict "shadowsocks" true "shadowsocksr" true "mieru" true "vmess" true "vless" true "trojan" true "hysteria2" true "hysteria" true "tuic" true "anytls" true -}}
 {{- $supportedProxies := list -}}
 {{- range $proxy := $sorted -}}
   {{- if hasKey $supportSet $proxy.Type -}}
@@ -152,11 +152,58 @@ proxies:
   password: {{ $password }}
   udp: true
   tfo: true
-  {{- if ne (default "" $proxy.Obfs) "" }}
+  {{- if ne (default "" $proxy.Plugin) "" }}
+  plugin: {{ $proxy.Plugin }}
+  plugin-opts: {{ default (dict) $proxy.PluginOptions | toJson }}
+  {{- else if ne (default "" $proxy.Obfs) "" }}
   plugin: obfs
   plugin-opts:
     mode: {{ $proxy.Obfs }}
     host: {{ default "" $proxy.ObfsHost }}
+  {{- end }}
+{{- else if eq $proxy.Type "shadowsocksr" }}
+- name: {{ $proxy.Name | quote }}
+  type: ssr
+  server: {{ $server }}
+  port: {{ $proxy.Port }}
+  password: {{ default "" $proxy.ServerKey | quote }}
+  cipher: {{ default "aes-128-cfb" $proxy.Method }}
+  obfs: {{ default "plain" $proxy.Obfs }}
+  protocol: {{ default "auth_aes128_sha1" $proxy.SSRProtocol }}
+  protocol-param: {{ printf "%d:%s" $.UserInfo.ID $password | quote }}
+  {{- if ne (default "" $proxy.ObfsParam) "" }}
+  obfs-param: {{ $proxy.ObfsParam | quote }}
+  {{- end }}
+  udp: true
+  tfo: true
+{{- else if eq $proxy.Type "mieru" }}
+  {{- $mieruTransport := "TCP" -}}
+  {{- if eq (lower (default "" $proxy.Network)) "udp" -}}
+    {{- $mieruTransport = "UDP" -}}
+  {{- end -}}
+  {{- $mieruMux := "" -}}
+  {{- if eq (lower (default "" $proxy.Multiplex)) "off" -}}
+    {{- $mieruMux = "MULTIPLEXING_OFF" -}}
+  {{- else if eq (lower (default "" $proxy.Multiplex)) "low" -}}
+    {{- $mieruMux = "MULTIPLEXING_LOW" -}}
+  {{- else if eq (lower (default "" $proxy.Multiplex)) "medium" -}}
+    {{- $mieruMux = "MULTIPLEXING_MIDDLE" -}}
+  {{- else if eq (lower (default "" $proxy.Multiplex)) "high" -}}
+    {{- $mieruMux = "MULTIPLEXING_HIGH" -}}
+  {{- end }}
+- name: {{ $proxy.Name | quote }}
+  type: mieru
+  server: {{ $server }}
+  port: {{ $proxy.Port }}
+  transport: {{ $mieruTransport }}
+  username: {{ $password | quote }}
+  password: {{ $password | quote }}
+  udp: true
+  {{- if ne $mieruMux "" }}
+  multiplexing: {{ $mieruMux }}
+  {{- end }}
+  {{- if ne (default "" $proxy.TrafficPattern) "" }}
+  traffic-pattern: {{ $proxy.TrafficPattern | quote }}
   {{- end }}
 {{- else if eq $proxy.Type "vmess" }}
 - name: {{ $proxy.Name | quote }}
@@ -217,8 +264,8 @@ proxies:
   {{- else -}}
     {{- $encParts := list -}}
     {{- $encParts = append $encParts $encryption -}}
-    {{- if ne (default "" $proxy.Encryption_Mode) "" -}}
-      {{- $encParts = append $encParts $proxy.Encryption_Mode -}}
+    {{- if ne (default "" $proxy.EncryptionMode) "" -}}
+      {{- $encParts = append $encParts $proxy.EncryptionMode -}}
     {{- end -}}
     {{- if ne (default "" $proxy.EncryptionRtt) "" -}}
       {{- $encParts = append $encParts $proxy.EncryptionRtt -}}
@@ -435,7 +482,7 @@ proxies:
   type: tuic
   server: {{ $server }}
   port: {{ $proxy.Port }}
-  uuid: {{ default "" $proxy.ServerKey }}
+  uuid: {{ $password }}
   password: {{ $password }}
   udp: true
   tfo: true
@@ -456,6 +503,9 @@ proxies:
   {{- end }}
   {{- if ne (default "" $proxy.CongestionController) "" }}
   congestion-controller: {{ $proxy.CongestionController }}
+  {{- end }}
+  {{- if ne (default 0 $proxy.Heartbeat) 0 }}
+  heartbeat-interval: {{ $proxy.Heartbeat }}
   {{- end }}
   {{- if $proxy.EchEnable }}
   ech-opts:

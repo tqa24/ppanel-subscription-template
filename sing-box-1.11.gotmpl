@@ -39,7 +39,7 @@
 {{- $supportedProxies := list -}}
 {{- range $proxy := $sorted -}}
   {{- $isSupported := false -}}
-  {{- if or (eq $proxy.Type "shadowsocks") (eq $proxy.Type "vmess") (eq $proxy.Type "trojan") (eq $proxy.Type "hysteria2") (eq $proxy.Type "hy2") (eq $proxy.Type "tuic") -}}
+  {{- if or (eq $proxy.Type "shadowsocks") (eq $proxy.Type "vmess") (eq $proxy.Type "trojan") (eq $proxy.Type "hysteria2") (eq $proxy.Type "hy2") (eq $proxy.Type "tuic") (eq $proxy.Type "naive") (eq $proxy.Type "snell") -}}
     {{- $isSupported = true -}}
   {{- else if eq $proxy.Type "vless" -}}
     {{- if or (eq $proxy.Transport "ws") (eq $proxy.Transport "websocket") (eq $proxy.Transport "httpupgrade") (eq $proxy.Transport "grpc") (eq $proxy.Transport "tcp") (not $proxy.Transport) -}}
@@ -75,7 +75,7 @@
 {{- $supportedProxies := list -}}
 {{- range $proxy := $sorted -}}
   {{- $isSupported := false -}}
-  {{- if or (eq .Type "shadowsocks") (eq .Type "vmess") (eq .Type "trojan") (eq .Type "hysteria2") (eq .Type "hy2") (eq .Type "tuic") -}}
+  {{- if or (eq .Type "shadowsocks") (eq .Type "vmess") (eq .Type "trojan") (eq .Type "hysteria2") (eq .Type "hy2") (eq .Type "tuic") (eq .Type "naive") (eq .Type "snell") -}}
     {{- $isSupported = true -}}
   {{- else if eq .Type "vless" -}}
     {{- if or (eq .Transport "ws") (eq .Transport "websocket") (eq .Transport "httpupgrade") (eq .Transport "grpc") (eq .Transport "tcp") (not .Transport) -}}
@@ -110,7 +110,8 @@
 {{- $svc := $proxy.ServiceName }}
 
 {{- $tlsOpts := "" -}}
-{{- if or $sni $proxy.AllowInsecure $proxy.Fingerprint -}}
+{{- $tlsRequired := or (eq $proxy.Security "tls") (eq $proxy.Security "reality") (eq $proxy.Type "hysteria2") (eq $proxy.Type "hy2") (eq $proxy.Type "tuic") (eq $proxy.Type "naive") -}}
+{{- if $tlsRequired -}}
   {{- $tlsOpts = "\"tls\": {\"enabled\": true" -}}
   {{- if $sni -}}
     {{- $tlsOpts = printf "%s, \"server_name\": \"%s\"" $tlsOpts $sni -}}
@@ -120,6 +121,16 @@
   {{- end -}}
   {{- if $proxy.Fingerprint -}}
     {{- $tlsOpts = printf "%s, \"utls\": {\"enabled\": true, \"fingerprint\": \"%s\"}" $tlsOpts ($proxy.Fingerprint) -}}
+  {{- end -}}
+  {{- if $proxy.ALPN -}}
+    {{- $tlsOpts = printf "%s, \"alpn\": %s" $tlsOpts (toJson $proxy.ALPN) -}}
+  {{- end -}}
+  {{- if and (eq $proxy.Security "reality") $proxy.RealityPublicKey -}}
+    {{- $reality := printf "\"reality\": {\"enabled\": true, \"public_key\": \"%s\"" $proxy.RealityPublicKey -}}
+    {{- if $proxy.RealityShortId -}}
+      {{- $reality = printf "%s, \"short_id\": \"%s\"" $reality $proxy.RealityShortId -}}
+    {{- end -}}
+    {{- $tlsOpts = printf "%s, %s}" $tlsOpts $reality -}}
   {{- end -}}
   {{- $tlsOpts = printf "%s}" $tlsOpts -}}
 {{- end -}}
@@ -145,13 +156,52 @@
 {{- end -}}
 
 {{- if eq $proxy.Type "shadowsocks" -}}
-{ "type": "shadowsocks", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "method": "{{ default "aes-128-gcm" $proxy.Method }}", "password": "{{ $pwd }}" }
+  {{- $method := default "aes-128-gcm" $proxy.Method -}}
+  {{- $password := $pwd -}}
+  {{- if $proxy.ServerKey -}}
+    {{- $needBytes := ternary 16 32 (eq $proxy.Method "2022-blake3-aes-128-gcm") -}}
+    {{- $cutLen := min $needBytes (len $pwd) | int -}}
+    {{- $userCut := $pwd | trunc $cutLen -}}
+    {{- $serverB64 := b64enc $proxy.ServerKey -}}
+    {{- $userB64 := b64enc $userCut -}}
+    {{- $password = printf "%s:%s" $serverB64 $userB64 -}}
+  {{- end -}}
+{ "type": "shadowsocks", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "method": "{{ $method }}", "password": "{{ $password }}" }
+
+{{- else if eq $proxy.Type "naive" -}}
+{{- $naiveOpts := "" -}}
+{{- if eq (lower (default "" $proxy.Network)) "udp" -}}
+  {{- $naiveOpts = printf "%s, \"quic\": true" $naiveOpts -}}
+{{- end -}}
+{{- $quicCC := default $proxy.CongestionController $proxy.QUICCongestionControl -}}
+{{- if $quicCC -}}
+  {{- $naiveOpts = printf "%s, \"quic_congestion_control\": \"%s\"" $naiveOpts $quicCC -}}
+{{- end -}}
+{ "type": "naive", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "username": "{{ $.UserInfo.ID }}", "password": "{{ $pwd }}"{{ $naiveOpts }}, {{ $tlsOpts }} }
+
+{{- else if eq $proxy.Type "snell" -}}
+{{- $snellVersion := 4 -}}
+{{- if eq (default 5 $proxy.Version) 6 -}}
+  {{- $snellVersion = 6 -}}
+{{- end -}}
+{{- $snellOpts := "" -}}
+{{- if and (eq $snellVersion 4) $proxy.Obfs -}}
+  {{- $snellOpts = printf "%s, \"obfs_mode\": \"%s\", \"obfs_host\": \"%s\"" $snellOpts $proxy.Obfs $sni -}}
+{{- end -}}
+{{- if and (eq $snellVersion 6) $proxy.Mode -}}
+  {{- $snellOpts = printf "%s, \"mode\": \"%s\"" $snellOpts $proxy.Mode -}}
+{{- end -}}
+{ "type": "snell", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "version": {{ $snellVersion }}, "psk": "{{ $proxy.ServerKey }}", "userkey": "{{ $pwd }}"{{ $snellOpts }} }
 
 {{- else if eq $proxy.Type "trojan" -}}
 { "type": "trojan", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "password": "{{ $pwd }}"{{ if $transportOpts }}, {{ $transportOpts }}{{ end }}, {{ $tlsOpts }} }
 
 {{- else if eq $proxy.Type "vless" -}}
-{ "type": "vless", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "uuid": "{{ $pwd }}"{{ if $transportOpts }}, {{ $transportOpts }}{{ end }}{{ if $tlsOpts }}, {{ $tlsOpts }}{{ end }} }
+{{- $flowOpts := "" -}}
+{{- if $proxy.Flow -}}
+  {{- $flowOpts = printf ", \"flow\": \"%s\"" $proxy.Flow -}}
+{{- end -}}
+{ "type": "vless", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "uuid": "{{ $pwd }}"{{ $flowOpts }}{{ if $transportOpts }}, {{ $transportOpts }}{{ end }}{{ if $tlsOpts }}, {{ $tlsOpts }}{{ end }} }
 
 {{- else if eq $proxy.Type "vmess" -}}
 { "type": "vmess", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "uuid": "{{ $pwd }}", "security": "auto"{{ if $transportOpts }}, {{ $transportOpts }}{{ end }}{{ if $tlsOpts }}, {{ $tlsOpts }}{{ end }} }
@@ -160,7 +210,7 @@
 { "type": "hysteria2", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "password": "{{ $pwd }}", {{ $tlsOpts }} }
 
 {{- else if eq $proxy.Type "tuic" -}}
-{ "type": "tuic", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "uuid": "{{ $proxy.ServerKey }}", "password": "{{ $pwd }}", "alpn": ["h3"], {{ $tlsOpts }} }
+{ "type": "tuic", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "uuid": "{{ $pwd }}", "password": "{{ $pwd }}", {{ $tlsOpts }} }
 
 {{- else if eq $proxy.Type "wireguard" -}}
 { "type": "wireguard", "tag": "{{ $name }}", "server": "{{ $server }}", "server_port": {{ $port }}, "private_key": "{{ $proxy.ServerKey }}", "peer_public_key": "{{ $proxy.RealityPublicKey }}" }
